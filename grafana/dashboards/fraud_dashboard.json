@@ -1,0 +1,113 @@
+{
+  "title": "FraudShield - Fraud Detection Dashboard",
+  "uid": "fraud-detection",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "style": "dark",
+  "tags": ["fraud", "ml", "ddm501"],
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "title": "Model Status",
+      "type": "stat", "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{ "expr": "ml_model_loaded", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }]
+        }
+      }
+    },
+    {
+      "id": 2, "title": "Fraud Rate (Rolling)",
+      "type": "gauge", "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [{ "expr": "fraud_detection_rate * 100", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 30,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 15 }] }
+        }
+      }
+    },
+    {
+      "id": 3, "title": "Prediction Rate",
+      "type": "stat", "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [{ "expr": "rate(fraud_predictions_total[5m])", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 4, "title": "HIGH/CRITICAL Alerts",
+      "type": "stat", "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [{ "expr": "rate(high_risk_transactions_total[5m])", "legendFormat": "{{risk_level}}", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        }
+      }
+    },
+    {
+      "id": 5, "title": "API Error Rate",
+      "type": "stat", "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "targets": [{ "expr": "rate(http_requests_total{status=~\"5..\"}[5m]) / rate(http_requests_total[5m]) * 100", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }] }
+        }
+      }
+    },
+    {
+      "id": 6, "title": "P95 Prediction Latency",
+      "type": "stat", "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [{ "expr": "histogram_quantile(0.95, rate(fraud_prediction_duration_seconds_bucket[5m])) * 1000", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "id": 7, "title": "Predictions Over Time",
+      "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "rate(fraud_predictions_total{result=\"normal\"}[5m])", "legendFormat": "Normal", "refId": "A" },
+        { "expr": "rate(fraud_predictions_total{result=\"fraud\"}[5m])", "legendFormat": "Fraud", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 } } }
+    },
+    {
+      "id": 8, "title": "Fraud Probability Distribution",
+      "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(fraud_probability_distribution_bucket[5m]))", "legendFormat": "P50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, rate(fraud_probability_distribution_bucket[5m]))", "legendFormat": "P95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, rate(fraud_probability_distribution_bucket[5m]))", "legendFormat": "P99", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 9, "title": "Request Rate by Endpoint",
+      "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [{ "expr": "rate(http_requests_total[5m])", "legendFormat": "{{method}} {{endpoint}}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 10, "title": "API Latency P50/P95/P99",
+      "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))", "legendFormat": "P50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))", "legendFormat": "P95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))", "legendFormat": "P99", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 11, "title": "High Risk Transactions Over Time",
+      "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [{ "expr": "rate(high_risk_transactions_total[5m])", "legendFormat": "{{risk_level}}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 12, "title": "Status Code Distribution",
+      "type": "piechart", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [{ "expr": "sum by (status) (rate(http_requests_total[5m]))", "legendFormat": "{{status}}", "refId": "A" }]
+    }
+  ]
+}

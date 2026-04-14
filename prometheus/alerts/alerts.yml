@@ -1,0 +1,70 @@
+groups:
+  - name: api_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) * 100 > 10
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP error rate"
+          description: "Error rate is {{ $value | printf \"%.2f\" }}%"
+
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1.0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency (P95 > 1s)"
+
+      - alert: APIDown
+        expr: up{job="fraudshield-api"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "FraudShield API is down"
+
+  - name: fraud_alerts
+    rules:
+      - alert: ModelNotLoaded
+        expr: ml_model_loaded == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fraud detection model is not loaded"
+
+      - alert: HighFraudRate
+        expr: fraud_detection_rate > 0.15
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fraud rate spike detected"
+          description: "Current fraud rate is {{ $value | printf \"%.2%\" }}"
+
+      - alert: HighPredictionLatency
+        expr: histogram_quantile(0.95, rate(fraud_prediction_duration_seconds_bucket[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High prediction latency (P95 > 100ms)"
+
+      - alert: HighRiskTransactionSpike
+        expr: rate(high_risk_transactions_total[5m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike in HIGH/CRITICAL risk transactions"
+
+      - alert: PredictionErrors
+        expr: rate(fraud_prediction_errors_total[5m]) > 0.1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prediction errors detected"
