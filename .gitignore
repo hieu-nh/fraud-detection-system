@@ -1,2 +1,31 @@
-.idea
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Data
+data/raw/
+
+# MLflow
+mlruns/
+
+# Reports
+reports/
+
+# Environment
+.env
+
+# OS
 .DS_Store
+
+# IDE
+.vscode/
+.idea/
