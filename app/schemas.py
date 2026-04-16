@@ -1,69 +1,62 @@
 """
-Pydantic schemas for Fraud Detection API.
+Pydantic schemas for Credit Card Fraud Detection API.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from typing import Optional
-from enum import Enum
-
-
-class TransactionType(str, Enum):
-    POS = "POS"
-    ATM = "ATM"
-    ONLINE = "Online"
-    TRANSFER = "Transfer"
-
-
-class CardType(str, Enum):
-    CREDIT = "Credit"
-    DEBIT = "Debit"
 
 
 class TransactionRequest(BaseModel):
     """Input schema for fraud prediction."""
 
-    transaction_amount: float = Field(..., gt=0, description="Transaction amount in million", examples=[6.0])
-    transaction_time: str = Field(..., description="Time in HH:MM format", examples=["10:54"])
-    transaction_date: str = Field(..., description="Date in YYYY-MM-DD format", examples=["2025-03-08"])
-    transaction_type: str = Field(..., description="POS, ATM, Online, Transfer", examples=["POS"])
-    merchant_category: str = Field(..., description="Merchant category", examples=["Retail"])
-    transaction_location: str = Field(..., description="City of transaction", examples=["Singapore"])
-    customer_home_location: str = Field(..., description="Customer home city", examples=["Lahore"])
-    distance_from_home: float = Field(..., ge=0, description="Distance from home in km", examples=[466.0])
-    card_type: str = Field(..., description="Credit or Debit", examples=["Credit"])
-    account_balance: float = Field(..., ge=0, description="Account balance in million", examples=[30.0])
-    daily_transaction_count: int = Field(..., ge=0, examples=[4])
-    weekly_transaction_count: int = Field(..., ge=0, examples=[17])
-    avg_transaction_amount: float = Field(..., ge=0, description="Average transaction amount in million", examples=[2.0])
-    max_transaction_last_24h: float = Field(..., ge=0, examples=[4.0])
-    is_international_transaction: bool = Field(..., examples=[True])
-    is_new_merchant: bool = Field(..., examples=[True])
-    failed_transaction_count: int = Field(..., ge=0, examples=[0])
-    unusual_time_transaction: bool = Field(..., examples=[False])
-    previous_fraud_count: int = Field(..., ge=0, examples=[1])
+    trans_date_trans_time: str = Field(
+        ..., description="Transaction datetime", examples=["2019-01-01 00:00:00"]
+    )
+    amt: float = Field(
+        ..., gt=0, description="Transaction amount in USD", examples=[107.23]
+    )
+    category: str = Field(
+        ..., description="Merchant category", examples=["grocery_pos"]
+    )
+    gender: str = Field(
+        ..., description="Cardholder gender: M or F", examples=["F"]
+    )
+    city_pop: int = Field(
+        ..., ge=0, description="Population of cardholder's city", examples=[149]
+    )
+    dob: str = Field(
+        ..., description="Date of birth (DD/MM/YY or YYYY-MM-DD)", examples=["21/6/78"]
+    )
+    lat: float = Field(
+        ..., description="Cardholder latitude", examples=[48.8876]
+    )
+    long: float = Field(
+        ..., description="Cardholder longitude", examples=[-118.1864]
+    )
+    merch_lat: float = Field(
+        ..., description="Merchant latitude", examples=[49.159]
+    )
+    merch_long: float = Field(
+        ..., description="Merchant longitude", examples=[-118.186]
+    )
+    state: str = Field(
+        ..., description="Cardholder's state", examples=["WA"]
+    )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "transaction_amount": 6.0,
-                "transaction_time": "10:54",
-                "transaction_date": "2025-03-08",
-                "transaction_type": "POS",
-                "merchant_category": "Retail",
-                "transaction_location": "Singapore",
-                "customer_home_location": "Lahore",
-                "distance_from_home": 466.0,
-                "card_type": "Credit",
-                "account_balance": 30.0,
-                "daily_transaction_count": 4,
-                "weekly_transaction_count": 17,
-                "avg_transaction_amount": 2.0,
-                "max_transaction_last_24h": 4.0,
-                "is_international_transaction": True,
-                "is_new_merchant": True,
-                "failed_transaction_count": 0,
-                "unusual_time_transaction": False,
-                "previous_fraud_count": 1
+                "trans_date_trans_time": "2019-01-01 12:30:00",
+                "amt": 107.23,
+                "category": "grocery_pos",
+                "gender": "F",
+                "city_pop": 149,
+                "dob": "21/6/78",
+                "lat": 48.8876,
+                "long": -118.1864,
+                "merch_lat": 49.159,
+                "merch_long": -118.186,
+                "state": "WA"
             }
         }
     }

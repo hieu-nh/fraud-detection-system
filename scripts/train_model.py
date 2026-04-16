@@ -1,22 +1,12 @@
 """
-FraudShield Model Training — Compare, Tune & Save Best Model.
+FraudShield Credit Card Fraud Detection — Train, Tune & Save Best Model.
 
-Workflow:
-  1. Load & engineer features from raw data
-  2. Compare 3 models (LogisticRegression, RandomForest, GBM)
-  3. Tune best model with RandomizedSearch
-  4. Save best model + pipeline artifacts
-
-All experiments tracked in MLflow.
+Dataset: fraudTrain.csv / fraudTest.csv (comma-separated)
+Train/Test already split — no need to split manually.
 
 Usage:
-    # Full pipeline: compare → tune → save
     python scripts/train_model.py
-
-    # Skip tuning (faster, uses default params)
     python scripts/train_model.py --skip-tune
-
-    # Custom iterations
     python scripts/train_model.py --n_iter 50
 """
 
@@ -31,14 +21,13 @@ import numpy as np
 import pandas as pd
 import mlflow
 import mlflow.sklearn
-from sklearn.model_selection import train_test_split, StratifiedKFold, RandomizedSearchCV
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.metrics import (
     classification_report, roc_auc_score,
-    average_precision_score, f1_score,
-    confusion_matrix, precision_score, recall_score
+    average_precision_score, f1_score, confusion_matrix
 )
 
 warnings.filterwarnings("ignore")
@@ -46,29 +35,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BASE_DIR   = Path(__file__).parent.parent
-DATA_PATH  = BASE_DIR / "data" / "raw" / "FraudShield_Banking_Data.csv"
+TRAIN_PATH = BASE_DIR / "data" / "raw" / "fraudTrain.csv"
+TEST_PATH  = BASE_DIR / "data" / "raw" / "fraudTest.csv"
 MODELS_DIR = BASE_DIR / "models"
 
 FEATURES = [
-    'Transaction_Amount (in Million)',
-    'Distance_From_Home',
-    'Account_Balance (in Million)',
-    'Daily_Transaction_Count',
-    'Weekly_Transaction_Count',
-    'Avg_Transaction_Amount (in Million)',
-    'Max_Transaction_Last_24h (in Million)',
-    'Failed_Transaction_Count',
-    'Previous_Fraud_Count',
-    'Is_International_Transaction',
-    'Is_New_Merchant',
-    'Unusual_Time_Transaction',
-    'Transaction_Type_enc',
-    'Merchant_Category_enc',
-    'Card_Type_enc',
-    'risk_score',
-    'amount_vs_avg',
+    'amt',
+    'city_pop',
+    'age',
+    'hour',
+    'day_of_week',
+    'month',
     'is_night',
     'is_weekend',
+    'distance',
+    'amt_vs_category_mean',
+    'category_enc',
+    'gender_enc',
+    'state_enc',
 ]
 
 
@@ -76,55 +60,96 @@ FEATURES = [
 # Data Loading & Feature Engineering
 # =============================================================================
 
-def load_and_prepare(path: str = str(DATA_PATH)):
-    """Load raw data and apply feature engineering."""
-    logger.info(f"Loading data from {path}")
-    df = pd.read_csv(path)
-    df = df.dropna(subset=['Fraud_Label']).reset_index(drop=True)
+def haversine(lat1, lon1, lat2, lon2):
+    """Calculate distance in km between two coordinates."""
+    R = 6371
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    return R * 2 * np.arcsin(np.sqrt(a))
 
-    # Encode target
-    df['Fraud_Label'] = (df['Fraud_Label'].str.strip() == 'Fraud').astype(int)
 
-    # Time features
-    df['hour']        = pd.to_datetime(df['Transaction_Time'], format='%H:%M', errors='coerce').dt.hour
-    dates             = pd.to_datetime(df['Transaction_Date'], errors='coerce')
-    df['day_of_week'] = dates.dt.dayofweek
-    df['is_weekend']  = (df['day_of_week'] >= 5).astype(int)
+def engineer_features(df: pd.DataFrame, label_encoders: dict = None, fit: bool = True):
+    """
+    Feature engineering for credit card fraud dataset.
+    fit=True  → fit encoders on train set
+    fit=False → use existing encoders for test set
+    """
+    df = df.copy()
+    if label_encoders is None:
+        label_encoders = {}
+
+    # Datetime features
+    dt = pd.to_datetime(df['trans_date_trans_time'], dayfirst=False, errors='coerce')
+    df['hour']        = dt.dt.hour
+    df['day_of_week'] = dt.dt.dayofweek
+    df['month']       = dt.dt.month
     df['is_night']    = ((df['hour'] >= 22) | (df['hour'] <= 5)).astype(int)
+    df['is_weekend']  = (df['day_of_week'] >= 5).astype(int)
 
-    # Binary flags
-    for col in ['Is_International_Transaction', 'Is_New_Merchant', 'Unusual_Time_Transaction']:
-        df[col] = (df[col].str.strip() == 'Yes').astype(float)
+    # Age from dob
+    dob = pd.to_datetime(df['dob'], dayfirst=True, errors='coerce')
+    df['age'] = (dt - dob).dt.days / 365.25
+    df['age'] = df['age'].fillna(df['age'].median()).clip(lower=0)
 
-    # LabelEncoder for categoricals
-    label_encoders = {}
-    for col in ['Transaction_Type', 'Merchant_Category', 'Card_Type']:
-        le = LabelEncoder()
-        df[col + '_enc'] = le.fit_transform(df[col].fillna('Unknown'))
-        label_encoders[col] = le
-
-    # Composite risk score
-    df['risk_score'] = (
-        df['Is_International_Transaction'] * 0.30 +
-        df['Is_New_Merchant']              * 0.20 +
-        df['Unusual_Time_Transaction']     * 0.25 +
-        (df['Failed_Transaction_Count'].fillna(0) > 0).astype(float) * 0.15 +
-        df['is_night']                     * 0.10
-    ).round(3)
-
-    # Amount vs average ratio
-    df['amount_vs_avg'] = np.where(
-        df['Avg_Transaction_Amount (in Million)'] > 0,
-        df['Transaction_Amount (in Million)'] / df['Avg_Transaction_Amount (in Million)'],
-        1.0
+    # Distance cardholder → merchant (haversine)
+    for col in ['lat', 'long', 'merch_lat', 'merch_long']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df['distance'] = haversine(
+        df['lat'].fillna(0),      df['long'].fillna(0),
+        df['merch_lat'].fillna(0), df['merch_long'].fillna(0)
     )
 
-    available = [f for f in FEATURES if f in df.columns]
-    X = df[available].fillna(df[available].median(numeric_only=True))
-    y = df['Fraud_Label']
+    # Amount vs category mean
+    if fit:
+        cat_mean = df.groupby('category')['amt'].mean()
+        label_encoders['cat_mean'] = cat_mean.to_dict()
+    df['amt_vs_category_mean'] = (
+        df['amt'] / df['category'].map(label_encoders['cat_mean']).fillna(1)
+    )
 
-    logger.info(f"Dataset: {X.shape} | Fraud rate: {y.mean():.4f}")
-    return X, y, label_encoders
+    # Gender encode
+    df['gender_enc'] = (df['gender'] == 'M').astype(int)
+
+    # LabelEncoder for category and state
+    for col, key in [('category', 'category'), ('state', 'state')]:
+        if fit:
+            le = LabelEncoder()
+            df[f'{col}_enc'] = le.fit_transform(df[col].fillna('Unknown'))
+            label_encoders[key] = le
+        else:
+            le = label_encoders[key]
+            df[f'{col}_enc'] = df[col].map(
+                dict(zip(le.classes_, le.transform(le.classes_)))
+            ).fillna(0).astype(int)
+
+    return df, label_encoders
+
+
+def load_and_prepare(train_path=str(TRAIN_PATH), test_path=str(TEST_PATH)):
+    """Load both CSVs and apply feature engineering."""
+    logger.info(f"Loading train: {train_path}")
+    train = pd.read_csv(train_path, index_col=0)
+    logger.info(f"Loading test:  {test_path}")
+    test  = pd.read_csv(test_path,  index_col=0)
+
+    logger.info(f"Train: {train.shape} | Fraud rate: {train['is_fraud'].mean():.4f}")
+    logger.info(f"Test:  {test.shape}  | Fraud rate: {test['is_fraud'].mean():.4f}")
+
+    # Engineer features — fit on train, transform on test
+    train, label_encoders = engineer_features(train, fit=True)
+    test,  _              = engineer_features(test, label_encoders=label_encoders, fit=False)
+
+    available = [f for f in FEATURES if f in train.columns]
+
+    X_train = train[available].fillna(0)
+    y_train = train['is_fraud']
+    X_test  = test[available].fillna(0)
+    y_test  = test['is_fraud']
+
+    logger.info(f"Features: {available}")
+    return X_train, X_test, y_train, y_test, label_encoders
 
 
 # =============================================================================
@@ -132,7 +157,6 @@ def load_and_prepare(path: str = str(DATA_PATH)):
 # =============================================================================
 
 def find_best_threshold(y_test, y_proba):
-    """Find threshold that maximizes F1 for fraud class."""
     thresholds = np.linspace(0.01, 0.99, 100)
     best_f1, best_thr = 0, 0.5
     for thr in thresholds:
@@ -157,19 +181,19 @@ def compute_metrics(y_test, y_pred, y_proba) -> dict:
 
 
 def print_comparison_table(results: dict):
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 95)
     print("Model Comparison (sorted by PR-AUC)")
-    print("=" * 90)
+    print("=" * 95)
     print(f"  {'Model':<35} {'ROC-AUC':>9} {'PR-AUC':>9} {'F1':>7} {'Precision':>10} {'Recall':>8} {'Threshold':>10}")
-    print("-" * 90)
-    for name, m in sorted(results.items(), key=lambda x: x[1]["pr_auc"], reverse=True):
+    print("-" * 95)
+    for name, m in sorted(results.items(), key=lambda x: x[1]['pr_auc'], reverse=True):
         print(f"  {name:<35} {m['roc_auc']:>9.4f} {m['pr_auc']:>9.4f} "
               f"{m['f1']:>7.4f} {m['precision']:>10.4f} {m['recall']:>8.4f} {m['threshold']:>10.3f}")
-    print("=" * 90)
+    print("=" * 95)
 
 
 # =============================================================================
-# Step 1: Compare models with default params
+# Step 1: Compare Models
 # =============================================================================
 
 def compare_models(X_train, X_test, y_train, y_test):
@@ -177,30 +201,34 @@ def compare_models(X_train, X_test, y_train, y_test):
     print("Step 1: Model Comparison")
     print("=" * 60)
 
-    scaler      = StandardScaler()
-    X_train_sc  = scaler.fit_transform(X_train)
-    X_test_sc   = scaler.transform(X_test)
+    # Scale for Logistic Regression
+    scaler     = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train)
+    X_test_sc  = scaler.transform(X_test)
 
     # Manual oversampling: fraud × 10
     fraud_idx = y_train[y_train == 1].index
     X_over    = pd.concat([X_train] + [X_train.loc[fraud_idx]] * 10)
     y_over    = pd.concat([y_train] + [y_train.loc[fraud_idx]] * 10)
-    logger.info(f"Oversampled: {X_over.shape} | Fraud: {y_over.mean():.3f}")
+    logger.info(f"Oversampled: {X_over.shape} | Fraud rate: {y_over.mean():.3f}")
 
     models_cfg = {
         "LogisticRegression_balanced": {
             "model": LogisticRegression(class_weight='balanced', max_iter=1000, C=0.5, random_state=42),
             "X_tr": X_train_sc, "X_te": X_test_sc, "y_tr": y_train,
+            "scaler": scaler,
         },
         "RandomForest_balanced": {
             "model": RandomForestClassifier(n_estimators=200, class_weight='balanced',
                                             max_depth=8, random_state=42, n_jobs=-1),
             "X_tr": X_train.values, "X_te": X_test.values, "y_tr": y_train,
+            "scaler": None,
         },
         "GBM_oversampled": {
             "model": GradientBoostingClassifier(n_estimators=200, max_depth=4,
                                                 learning_rate=0.05, random_state=42),
             "X_tr": X_over.values, "X_te": X_test.values, "y_tr": y_over,
+            "scaler": None,
         },
     }
 
@@ -220,21 +248,19 @@ def compare_models(X_train, X_test, y_train, y_test):
                 metrics = compute_metrics(y_test, y_pred, y_proba)
                 metrics["threshold"] = round(float(best_thr), 3)
                 results[name] = {**metrics, "model": clf,
-                                 "X_te": cfg["X_te"], "proba": y_proba,
-                                 "scaler": scaler if "Logistic" in name else None}
+                                 "proba": y_proba, "scaler": cfg["scaler"]}
 
                 mlflow.log_params({"model_type": name, "threshold": best_thr})
                 mlflow.log_metrics({k: v for k, v in metrics.items() if isinstance(v, (int, float))})
 
     print_comparison_table({k: v for k, v in results.items()})
-
     best_name = max(results, key=lambda k: results[k]["pr_auc"])
     print(f"\n🏆 Best by PR-AUC: {best_name}")
     return results, best_name
 
 
 # =============================================================================
-# Step 2: Tune best model
+# Step 2: Tune Best Model
 # =============================================================================
 
 def tune_model(best_name, X_train, y_train, X_test, y_test, n_iter=30):
@@ -242,10 +268,11 @@ def tune_model(best_name, X_train, y_train, X_test, y_test, n_iter=30):
     print(f"Step 2: Hyperparameter Tuning — {best_name} ({n_iter} iterations)")
     print("=" * 60)
 
-    # Manual oversampling
     fraud_idx = y_train[y_train == 1].index
     X_over    = pd.concat([X_train] + [X_train.loc[fraud_idx]] * 10)
     y_over    = pd.concat([y_train] + [y_train.loc[fraud_idx]] * 10)
+
+    final_scaler = None
 
     if "GBM" in best_name:
         param_dist = {
@@ -257,6 +284,7 @@ def tune_model(best_name, X_train, y_train, X_test, y_test, n_iter=30):
         }
         base = GradientBoostingClassifier(random_state=42)
         X_tr, y_tr = X_over.values, y_over
+        X_te = X_test.values
 
     elif "RandomForest" in best_name:
         param_dist = {
@@ -268,6 +296,7 @@ def tune_model(best_name, X_train, y_train, X_test, y_test, n_iter=30):
         }
         base = RandomForestClassifier(class_weight='balanced', random_state=42, n_jobs=-1)
         X_tr, y_tr = X_train.values, y_train
+        X_te = X_test.values
 
     else:  # LogisticRegression
         param_dist = {
@@ -275,10 +304,10 @@ def tune_model(best_name, X_train, y_train, X_test, y_test, n_iter=30):
             "solver":   ["lbfgs", "liblinear"],
             "max_iter": [500, 1000, 2000],
         }
-        scaler  = StandardScaler()
-        X_tr    = scaler.fit_transform(X_train)
-        y_tr    = y_train
-        X_test  = scaler.transform(X_test)
+        final_scaler = StandardScaler()
+        X_tr = final_scaler.fit_transform(X_train)
+        y_tr = y_train
+        X_te = final_scaler.transform(X_test)
         base = LogisticRegression(class_weight='balanced', random_state=42)
 
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -292,7 +321,6 @@ def tune_model(best_name, X_train, y_train, X_test, y_test, n_iter=30):
         search.fit(X_tr, y_tr)
         tuned_model = search.best_estimator_
 
-        X_te = X_test.values if hasattr(X_test, 'values') else X_test
         y_proba = tuned_model.predict_proba(X_te)[:, 1]
         best_thr, _ = find_best_threshold(y_test, y_proba)
         y_pred  = (y_proba >= best_thr).astype(int)
@@ -308,32 +336,30 @@ def tune_model(best_name, X_train, y_train, X_test, y_test, n_iter=30):
         print(f"\n✅ Best CV PR-AUC: {search.best_score_:.4f}")
         print(f"Best Params: {search.best_params_}")
 
-    return tuned_model, metrics
+    return tuned_model, metrics, final_scaler
 
 
 # =============================================================================
-# Step 3: Save best model
+# Step 3: Save
 # =============================================================================
 
-def save_model(model, label_encoders, metrics, threshold, model_name):
+def save_model(model, label_encoders, metrics, threshold, model_name, scaler=None):
     MODELS_DIR.mkdir(exist_ok=True)
 
-    model_path    = MODELS_DIR / "fraud_model.pkl"
-    pipeline_path = MODELS_DIR / "pipeline.pkl"
-
-    with open(model_path, "wb") as f:
+    with open(MODELS_DIR / "fraud_model.pkl", "wb") as f:
         pickle.dump(model, f)
 
-    with open(pipeline_path, "wb") as f:
+    with open(MODELS_DIR / "pipeline.pkl", "wb") as f:
         pickle.dump({
-            "label_encoders":  label_encoders,
-            "feature_names":   FEATURES,
-            "best_threshold":  threshold,
-            "model_name":      model_name,
+            "label_encoders": label_encoders,
+            "feature_names":  FEATURES,
+            "best_threshold": threshold,
+            "model_name":     model_name,
+            "scaler":         scaler,
         }, f)
 
-    print(f"\n✅ Saved fraud_model.pkl  → {model_path}")
-    print(f"✅ Saved pipeline.pkl     → {pipeline_path}")
+    print(f"\n✅ Saved fraud_model.pkl  → {MODELS_DIR / 'fraud_model.pkl'}")
+    print(f"✅ Saved pipeline.pkl     → {MODELS_DIR / 'pipeline.pkl'}")
     print(f"\nFinal Metrics:")
     for k, v in metrics.items():
         if isinstance(v, float):
@@ -346,50 +372,46 @@ def save_model(model, label_encoders, metrics, threshold, model_name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data",       default=str(DATA_PATH))
+    parser.add_argument("--train",      default=str(TRAIN_PATH))
+    parser.add_argument("--test",       default=str(TEST_PATH))
     parser.add_argument("--n_iter",     type=int, default=30)
-    parser.add_argument("--skip-tune",  action="store_true",
-                        help="Skip tuning, save best model from comparison directly")
+    parser.add_argument("--skip-tune",  action="store_false", default=True)
     args = parser.parse_args()
 
     print("=" * 60)
-    print("FraudShield Model Training")
+    print("FraudShield Credit Card Fraud Detection — Training")
     print("=" * 60)
-    print(f"n_iter:     {args.n_iter}")
-    print(f"skip_tune:  {args.skip_tune}")
+    print(f"n_iter:    {args.n_iter}")
+    print(f"skip_tune: {args.skip_tune}")
 
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "mlruns"))
     mlflow.set_experiment("fraud-detection")
 
-    # Load data
-    X, y, label_encoders = load_and_prepare(args.data)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    logger.info(f"Train: {X_train.shape} | Test: {X_test.shape}")
+    # Load & prepare
+    X_train, X_test, y_train, y_test, label_encoders = load_and_prepare(args.train, args.test)
 
     with mlflow.start_run(run_name="FraudShield_Training"):
         mlflow.log_params({
-            "dataset_size": len(X),
-            "fraud_rate":   round(float(y.mean()), 4),
-            "train_size":   len(X_train),
-            "test_size":    len(X_test),
-            "skip_tune":    args.skip_tune,
+            "train_size":  len(X_train),
+            "test_size":   len(X_test),
+            "fraud_rate":  round(float(y_train.mean()), 4),
+            "features":    len(FEATURES),
+            "skip_tune":   args.skip_tune,
         })
 
-        # Step 1: Compare models
+        # Step 1: Compare
         results, best_name = compare_models(X_train, X_test, y_train, y_test)
 
-        # Step 2: Tune or use best from comparison
+        # Step 2: Tune or skip (default: skip)
         if args.skip_tune:
-            print(f"\n⏭  Skipping tuning — saving best model from comparison: {best_name}")
-            best_result = results[best_name]
-            final_model = best_result["model"]
-            final_metrics = {k: v for k, v in best_result.items()
-                             if isinstance(v, (int, float))}
+            print(f"\n⏭  Skipping tuning — using best from comparison: {best_name}")
+            best_result     = results[best_name]
+            final_model     = best_result["model"]
+            final_metrics   = {k: v for k, v in best_result.items() if isinstance(v, (int, float))}
             final_threshold = best_result["threshold"]
+            final_scaler    = best_result.get("scaler")
         else:
-            final_model, final_metrics = tune_model(
+            final_model, final_metrics, final_scaler = tune_model(
                 best_name, X_train, y_train, X_test, y_test, n_iter=args.n_iter
             )
             final_threshold = final_metrics["threshold"]
@@ -399,11 +421,14 @@ def main():
                             if isinstance(v, (int, float))})
 
     # Step 3: Save
-    save_model(final_model, label_encoders, final_metrics, final_threshold, best_name)
+    save_model(final_model, label_encoders, final_metrics,
+               final_threshold, best_name, scaler=final_scaler)
 
-    # Print final classification report
-    X_test_arr = X_test.values if hasattr(X_test, 'values') else X_test
-    y_pred = (final_model.predict_proba(X_test_arr)[:, 1] >= final_threshold).astype(int)
+    # Classification report
+    X_te = X_test.values if hasattr(X_test, 'values') else X_test
+    if final_scaler is not None:
+        X_te = final_scaler.transform(X_te)
+    y_pred = (final_model.predict_proba(X_te)[:, 1] >= final_threshold).astype(int)
     print(f"\nClassification Report (threshold={final_threshold:.2f}):")
     print(classification_report(y_test, y_pred, target_names=["Normal", "Fraud"]))
 

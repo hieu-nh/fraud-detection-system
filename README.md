@@ -1,24 +1,26 @@
-# FraudShield — Real-Time Fraud Detection System
+# FraudShield — Real-Time Credit Card Fraud Detection
 
 ![CI](https://github.com/your-org/fraud-detection/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
-![Model](https://img.shields.io/badge/model-GBM%20%7C%20RandomForest-orange)
+![Model](https://img.shields.io/badge/model-GBM-orange)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
 
-An end-to-end ML system for real-time financial transaction fraud detection. Built with scikit-learn, FastAPI, MLflow, Prometheus, and Grafana.
+An end-to-end ML system for real-time credit card fraud detection. Built with scikit-learn GBM, FastAPI, MLflow, Prometheus, and Grafana.
+
+**Model Performance:**
+- PR-AUC: **0.821** | F1: **0.784** | Precision: **0.847** | Recall: **0.730**
 
 ## Features
 
 - 🔍 **Real-time fraud scoring** with probability and risk level (LOW/MEDIUM/HIGH/CRITICAL)
-- 🤖 **GBM / RandomForest** with manual oversampling and `class_weight='balanced'`
-- 🎯 **Threshold tuning** — finds optimal F1 threshold automatically
-- 🔬 **Model experimentation** — compare 3 models + hyperparameter tuning with RandomizedSearch
-- 📊 **MLflow experiment tracking** — local (`mlruns/`) or Docker server
-- 📈 **Prometheus + Grafana** monitoring with fraud-specific metrics and dashboards
-- 🧠 **SHAP explainability** — understand why a transaction was flagged
-- ⚖️ **Fairness analysis** across card type, transaction type, and geography
-- 🐳 **Fully containerized** with Docker Compose (API + MLflow + Prometheus + Grafana)
-- 🔄 **GitHub Actions CI/CD** with lint, tests, and Docker build on every push
+- 🤖 **GBM model** with manual oversampling — PR-AUC 0.82 on 555K test transactions
+- 🎯 **Threshold tuning** — optimal F1 threshold found automatically
+- 🔬 **Model comparison** — LogisticRegression, RandomForest, GBM benchmarked
+- 📊 **MLflow experiment tracking** — local (`mlruns/`)
+- 📈 **Prometheus + Grafana** monitoring with fraud-specific dashboards
+- 🧠 **SHAP explainability** + **Fairness analysis** (gender, category, state)
+- 🐳 **Fully containerized** with Docker Compose
+- 🔄 **GitHub Actions CI/CD**
 
 ## Project Structure
 
@@ -32,9 +34,8 @@ fraud-detection/
 │   ├── middleware.py         # HTTP metrics middleware
 │   └── config.py             # Configuration
 ├── scripts/
-│   ├── preprocess.py         # (Optional) Save processed data to disk
-│   ├── train_model.py        # Compare, tune & save best model + MLflow tracking
-│   ├── evaluate_model.py     # Evaluate model + generate plots
+│   ├── train_model.py        # Compare, tune & save best model
+│   ├── evaluate_model.py     # Evaluation plots
 │   ├── responsible_ai.py     # SHAP + fairness analysis
 │   └── load_test.py          # Load testing
 ├── tests/
@@ -42,7 +43,7 @@ fraud-detection/
 │   ├── test_model.py         # Model unit tests
 │   └── test_data.py          # Data quality tests
 ├── data/
-│   └── raw/                  # Raw dataset (CSV)
+│   └── raw/                  # fraudTrain.csv + fraudTest.csv
 ├── models/                   # Saved model files (auto-generated)
 ├── reports/                  # Evaluation plots (auto-generated)
 ├── prometheus/               # Prometheus config + alert rules
@@ -70,34 +71,33 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## Dataset
+
+Download from Kaggle:
+**https://www.kaggle.com/datasets/kartik2112/fraud-detection/data**
+
+Place both files at:
+```
+data/raw/fraudTrain.csv
+data/raw/fraudTest.csv
+```
+
+Dataset info:
+- **Train:** ~1.3M transactions | Fraud rate: 0.58%
+- **Test:**  ~555K transactions | Fraud rate: 0.39%
+- **Features:** transaction amount, merchant category, location coordinates, cardholder demographics
+- **Target:** `is_fraud` (0 = normal, 1 = fraud)
+
 ## ML Pipeline
 
-Place dataset at `data/raw/FraudShield_Banking_Data.csv`, then:
-
 ```bash
-# Full pipeline: compare 3 models → tune best → save (default)
+# Train model (compare 3 models → save best by PR-AUC)
 python scripts/train_model.py
 
-# Skip tuning, save best from comparison directly (faster)
-python scripts/train_model.py --skip-tune
-
-# Custom tuning iterations
-python scripts/train_model.py --n_iter 50
-```
-
-**What it does internally:**
-1. Compare 3 models (LogisticRegression, RandomForest, GBM) — pick best by PR-AUC
-2. Tune best model with RandomizedSearch
-3. Find optimal threshold (max F1)
-4. Save `models/fraud_model.pkl` + `models/pipeline.pkl`
-
-**View MLflow results:**
-```bash
+# View MLflow results
 mlflow ui --backend-store-uri mlruns --port 5000
 # Open http://localhost:5000
-```
 
-```bash
 # Evaluate
 python scripts/evaluate_model.py
 # → Saves reports/confusion_matrix.png, roc_curve.png, etc.
@@ -107,9 +107,37 @@ python scripts/responsible_ai.py
 # → Saves reports/shap_importance.png, fairness_analysis.png
 ```
 
-## Deployment
+> No separate preprocess step — feature engineering runs automatically inside `train_model.py`.
 
-### Start full stack
+## Prediction Flow
+
+```
+API Request (JSON)
+        ↓
+app/model.py._preprocess()
+  ├── Extract hour, day_of_week, month, is_night, is_weekend from trans_date_trans_time
+  ├── Calculate age from dob
+  ├── Calculate distance (haversine: cardholder lat/long → merchant lat/long)
+  ├── Compute amt_vs_category_mean ratio
+  ├── LabelEncode category and state (using encoders from pipeline.pkl)
+  └── Encode gender (M=1, F=0)
+        ↓
+numpy array (13 features)
+        ↓
+fraud_model.pkl.predict_proba()
+        ↓
+fraud_probability = 0.92
+        ↓
+probability >= best_threshold (from pipeline.pkl → 0.851)
+        ↓
+is_fraud = True → risk_level = "CRITICAL"
+        ↓
+JSON Response
+```
+
+> `pipeline.pkl` and `fraud_model.pkl` must always be trained together.
+
+## Deployment
 
 ```bash
 docker-compose up --build -d
@@ -123,49 +151,15 @@ docker-compose up --build -d
 | Prometheus | http://localhost:9090      | —           |
 | Grafana    | http://localhost:3000      | admin/admin |
 
-### Train model inside container
-
 ```bash
+# Train model inside container
 docker-compose exec api python scripts/train_model.py
+
+docker-compose up -d              # Start all
+docker-compose down               # Stop all
+docker-compose logs -f api        # View logs
+docker-compose ps                 # Check status
 ```
-
-### Common Docker commands
-
-```bash
-docker-compose up -d              # Start all services
-docker-compose up --build -d      # Rebuild and start
-docker-compose down               # Stop all services
-docker-compose logs -f api        # View API logs
-docker-compose ps                 # Check service status
-docker-compose restart api        # Restart API only
-```
-
-## Prediction Flow
-
-```
-API Request (JSON)
-        ↓
-app/model.py._preprocess()
-  ├── Encode categoricals using label_encoders (from pipeline.pkl)
-  │   e.g. "POS" → 2, "Credit" → 0, "Electronics" → 3
-  ├── Compute risk_score, amount_vs_avg, is_night, is_weekend
-  └── Order features correctly (19 features)
-        ↓
-numpy array (19 features)
-        ↓
-fraud_model.pkl.predict_proba()
-        ↓
-fraud_probability = 0.87
-        ↓
-probability >= best_threshold (from pipeline.pkl)
-        ↓
-is_fraud = True → risk_level = "CRITICAL"
-        ↓
-JSON Response
-```
-
-> **Note:** `pipeline.pkl` and `fraud_model.pkl` must always be trained together.
-> Never mix a new `fraud_model.pkl` with an old `pipeline.pkl` — LabelEncoder mappings may differ.
 
 ## API Usage
 
@@ -184,31 +178,23 @@ curl http://localhost:8000/health
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "transaction_amount": 45.0,
-    "transaction_time": "03:15",
-    "transaction_date": "2025-03-08",
-    "transaction_type": "Online",
-    "merchant_category": "Electronics",
-    "transaction_location": "Tokyo",
-    "customer_home_location": "Lagos",
-    "distance_from_home": 13000.0,
-    "card_type": "Credit",
-    "account_balance": 1.5,
-    "daily_transaction_count": 20,
-    "weekly_transaction_count": 60,
-    "avg_transaction_amount": 1.0,
-    "max_transaction_last_24h": 45.0,
-    "is_international_transaction": true,
-    "is_new_merchant": true,
-    "failed_transaction_count": 4,
-    "unusual_time_transaction": true,
-    "previous_fraud_count": 1
+    "trans_date_trans_time": "2019-06-21 12:14:00",
+    "amt": 1500.00,
+    "category": "shopping_net",
+    "gender": "M",
+    "city_pop": 333497,
+    "dob": "19/3/68",
+    "lat": 33.986,
+    "long": -81.200,
+    "merch_lat": 34.421,
+    "merch_long": -82.611,
+    "state": "SC"
   }'
 ```
 ```json
 {
   "is_fraud": true,
-  "fraud_probability": 0.8741,
+  "fraud_probability": 0.9231,
   "risk_level": "CRITICAL",
   "model_version": "1.0.0",
   "latency_ms": 8.3
@@ -221,25 +207,17 @@ curl -X POST http://localhost:8000/predict \
 import requests
 
 response = requests.post("http://localhost:8000/predict", json={
-    "transaction_amount": 2.0,
-    "transaction_time": "14:30",
-    "transaction_date": "2025-03-08",
-    "transaction_type": "POS",
-    "merchant_category": "Retail",
-    "transaction_location": "Singapore",
-    "customer_home_location": "Singapore",
-    "distance_from_home": 5.0,
-    "card_type": "Credit",
-    "account_balance": 50.0,
-    "daily_transaction_count": 2,
-    "weekly_transaction_count": 8,
-    "avg_transaction_amount": 2.5,
-    "max_transaction_last_24h": 3.0,
-    "is_international_transaction": False,
-    "is_new_merchant": False,
-    "failed_transaction_count": 0,
-    "unusual_time_transaction": False,
-    "previous_fraud_count": 0,
+    "trans_date_trans_time": "2019-06-21 14:30:00",
+    "amt": 29.84,
+    "category": "personal_care",
+    "gender": "F",
+    "city_pop": 302,
+    "dob": "17/1/90",
+    "lat": 40.320,
+    "long": -110.436,
+    "merch_lat": 39.450,
+    "merch_long": -109.960,
+    "state": "UT"
 })
 print(response.json())
 ```
@@ -247,25 +225,14 @@ print(response.json())
 ## Running Tests
 
 ```bash
-# All tests
 pytest tests/ -v
-
-# With coverage
 pytest tests/ -v --cov=app --cov-report=html
-
-# By file
-pytest tests/test_api.py -v      # API integration tests
-pytest tests/test_model.py -v    # Model unit tests
-pytest tests/test_data.py -v     # Data quality tests
 ```
 
 ## Load Testing
 
 ```bash
-# Constant load
 python scripts/load_test.py --duration 60 --workers 10
-
-# Spike test
 python scripts/load_test.py --spike
 ```
 
@@ -278,7 +245,7 @@ python scripts/responsible_ai.py
 Generates in `reports/`:
 - `shap_importance.png` — Top features driving fraud predictions
 - `shap_beeswarm.png` — Feature impact distribution
-- `fairness_analysis.png` — Recall comparison across groups
+- `fairness_analysis.png` — Recall by gender, category, state
 
 ## Monitoring
 
@@ -309,8 +276,8 @@ Generates in `reports/`:
 | Problem | Solution |
 |---------|----------|
 | `Model not loaded` (503) | Run `python scripts/train_model.py` first |
+| Dataset not found | Download from Kaggle link above, place in `data/raw/` |
 | MLflow 403 error | Use local: `mlflow ui --backend-store-uri mlruns --port 5000` |
 | Grafana no data | Check `localhost:9090/targets` — API must be UP |
 | Docker build fails | Use `python:3.10` (not `slim`) in Dockerfile |
-| numpy compatibility error | Ensure `numpy<2` in requirements.txt |
-| `experiment.py` slow | Reduce `--n_iter` to 10 for faster tuning |
+| numpy compatibility | Ensure `numpy<2` in requirements.txt |
