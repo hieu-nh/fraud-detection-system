@@ -156,6 +156,84 @@ docker-compose logs -f api        # View logs
 docker-compose ps                 # Check status
 ```
 
+### Test Cases
+
+**🔴 Fraud — late night, high amount**
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "trans_date_trans_time": "2019-01-02 01:06:00",
+    "amt": 281.06,
+    "category": "grocery_pos",
+    "gender": "M",
+    "city_pop": 885,
+    "dob": "15/9/88",
+    "lat": 35.9946,
+    "long": -81.7266,
+    "merch_lat": 36.430,
+    "merch_long": -81.179,
+    "state": "NC"
+  }'
+```
+
+**🔴 Fraud — 3am, unusual amount**
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "trans_date_trans_time": "2019-01-02 03:05:00",
+    "amt": 276.31,
+    "category": "grocery_pos",
+    "gender": "F",
+    "city_pop": 1595797,
+    "dob": "28/10/60",
+    "lat": 29.44,
+    "long": -98.459,
+    "merch_lat": 29.273,
+    "merch_long": -98.836,
+    "state": "TX"
+  }'
+```
+
+**🟢 Normal — daytime, small amount**
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "trans_date_trans_time": "2019-01-01 14:30:00",
+    "amt": 4.97,
+    "category": "misc_net",
+    "gender": "F",
+    "city_pop": 3495,
+    "dob": "9/3/88",
+    "lat": 36.0788,
+    "long": -81.1781,
+    "merch_lat": 36.011,
+    "merch_long": -82.048,
+    "state": "NC"
+  }'
+```
+
+**🟢 Normal — business hours grocery**
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "trans_date_trans_time": "2019-01-01 12:14:00",
+    "amt": 29.84,
+    "category": "personal_care",
+    "gender": "F",
+    "city_pop": 302,
+    "dob": "17/1/90",
+    "lat": 40.320,
+    "long": -110.436,
+    "merch_lat": 39.450,
+    "merch_long": -109.960,
+    "state": "UT"
+  }'
+```
+
 ## API Usage
 
 ### Health Check
@@ -284,16 +362,39 @@ Generates in `reports/`:
 | `fraud_prediction_duration_seconds` | Histogram | Inference latency |
 | `http_requests_total` | Counter | API request count |
 
+### Grafana Dashboard (`http://localhost:3000`)
+
+The dashboard has 12 panels:
+
+| Panel | Type | Query | What it shows |
+|-------|------|-------|---------------|
+| **Model Status** | Stat | `ml_model_loaded` | Green = model loaded, Red = model down |
+| **Fraud Rate (Rolling)** | Gauge | `fraud_detection_rate * 100` | % of recent 1000 predictions flagged as fraud. Threshold: yellow >5%, red >15% |
+| **Prediction Rate** | Stat | `rate(fraud_predictions_total[5m])` | How many predictions per second |
+| **HIGH/CRITICAL Alerts** | Stat | `rate(high_risk_transactions_total[5m])` | Rate of high-risk transactions being detected |
+| **API Error Rate** | Stat | `rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) * 100` | % of requests returning 5xx errors |
+| **P95 Prediction Latency** | Stat | `histogram_quantile(0.95, rate(fraud_prediction_duration_seconds_bucket[5m])) * 1000` | 95th percentile model inference time in ms |
+| **Predictions Over Time** | Time series | `rate(fraud_predictions_total[5m])` by result | Normal vs Fraud prediction volume over time |
+| **Fraud Probability Distribution** | Time series | `histogram_quantile(0.50/0.95/0.99, ...)` | Spread of fraud probability scores — P50, P95, P99 |
+| **Request Rate by Endpoint** | Time series | `rate(http_requests_total[5m])` | Traffic per endpoint (predict, health, metrics) |
+| **API Latency P50/P95/P99** | Time series | `histogram_quantile(...)` | End-to-end HTTP response time percentiles |
+| **High Risk Transactions Over Time** | Time series | `rate(high_risk_transactions_total[5m])` by risk_level | HIGH vs CRITICAL risk transactions over time |
+| **Status Code Distribution** | Pie chart | `sum by (status) (rate(http_requests_total[5m]))` | Breakdown of 200, 422, 503 responses |
+
 ### Alert Rules (8 total)
 
-- `ModelNotLoaded` — Critical when model is down
-- `HighFraudRate` — Fraud rate > 15%
-- `HighPredictionLatency` — P95 > 100ms
-- `HighRiskTransactionSpike` — Spike in HIGH/CRITICAL transactions
-- `PredictionErrors` — Error rate > 0.1/s
-- `HighErrorRate` — HTTP 5xx > 10%
-- `HighRequestLatency` — HTTP P95 > 1s
-- `APIDown` — API unreachable
+View active alerts at `http://localhost:9090/alerts`
+
+| Alert | Condition | Severity | Meaning |
+|-------|-----------|----------|---------|
+| `ModelNotLoaded` | `ml_model_loaded == 0` for 30s | Critical | Model failed to load — all predictions returning 503 |
+| `HighFraudRate` | `fraud_detection_rate > 0.15` for 2m | Critical | More than 15% of recent transactions flagged as fraud — possible attack |
+| `HighPredictionLatency` | P95 > 100ms for 2m | Warning | Model inference too slow |
+| `HighRiskTransactionSpike` | `rate(high_risk_transactions_total[5m]) > 5` for 1m | Warning | Sudden spike in HIGH/CRITICAL risk detections |
+| `PredictionErrors` | `rate(fraud_prediction_errors_total[5m]) > 0.1` for 1m | Critical | Model throwing errors on valid requests |
+| `HighErrorRate` | HTTP 5xx > 10% for 1m | Critical | Too many server errors |
+| `HighRequestLatency` | HTTP P95 > 1s for 2m | Warning | API responding too slowly |
+| `APIDown` | `up{job="fraudshield-api"} == 0` for 30s | Critical | API container unreachable |
 
 ## Troubleshooting
 
