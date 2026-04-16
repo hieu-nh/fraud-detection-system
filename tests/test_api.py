@@ -1,9 +1,8 @@
 """
-Integration tests for FraudShield Detection API.
+Integration tests for FraudShield Credit Card Fraud Detection API.
 
 Run with:
-    pytest tests/ -v
-    pytest tests/ -v --cov=app --cov-report=html
+    pytest tests/test_api.py -v
 """
 
 import pytest
@@ -14,108 +13,88 @@ from app.main import app
 
 client = TestClient(app)
 
-VALID_TRANSACTION = {
-    "transaction_amount": 6.0,
-    "transaction_time": "10:54",
-    "transaction_date": "2025-03-08",
-    "transaction_type": "POS",
-    "merchant_category": "Retail",
-    "transaction_location": "Singapore",
-    "customer_home_location": "Lahore",
-    "distance_from_home": 466.0,
-    "card_type": "Credit",
-    "account_balance": 30.0,
-    "daily_transaction_count": 4,
-    "weekly_transaction_count": 17,
-    "avg_transaction_amount": 2.0,
-    "max_transaction_last_24h": 4.0,
-    "is_international_transaction": True,
-    "is_new_merchant": True,
-    "failed_transaction_count": 0,
-    "unusual_time_transaction": False,
-    "previous_fraud_count": 1,
+# --- Test transactions ---
+
+NORMAL_TRANSACTION = {
+    "trans_date_trans_time": "2019-01-01 14:30:00",
+    "amt": 4.97,
+    "category": "misc_net",
+    "gender": "F",
+    "city_pop": 3495,
+    "dob": "9/3/88",
+    "lat": 36.0788,
+    "long": -81.1781,
+    "merch_lat": 36.011,
+    "merch_long": -82.048,
+    "state": "NC",
 }
 
-HIGH_RISK_TRANSACTION = {
-    "transaction_amount": 50.0,
-    "transaction_time": "03:22",
-    "transaction_date": "2025-03-08",
-    "transaction_type": "Online",
-    "merchant_category": "Electronics",
-    "transaction_location": "Tokyo",
-    "customer_home_location": "Lagos",
-    "distance_from_home": 12000.0,
-    "card_type": "Credit",
-    "account_balance": 2.0,
-    "daily_transaction_count": 15,
-    "weekly_transaction_count": 50,
-    "avg_transaction_amount": 1.0,
-    "max_transaction_last_24h": 50.0,
-    "is_international_transaction": True,
-    "is_new_merchant": True,
-    "failed_transaction_count": 5,
-    "unusual_time_transaction": True,
-    "previous_fraud_count": 1,
+FRAUD_TRANSACTION = {
+    "trans_date_trans_time": "2019-01-02 01:06:00",
+    "amt": 281.06,
+    "category": "grocery_pos",
+    "gender": "M",
+    "city_pop": 885,
+    "dob": "15/9/88",
+    "lat": 35.9946,
+    "long": -81.7266,
+    "merch_lat": 36.430,
+    "merch_long": -81.179,
+    "state": "NC",
 }
 
 
 @pytest.fixture(autouse=True)
 def mock_model():
-    """Mock the fraud detection model for all tests."""
+    """Mock the model for all tests — no .pkl file needed."""
     mock = MagicMock()
     mock.is_loaded.return_value = True
     mock.predict.return_value = (False, 0.12, "LOW", 8.5)
     mock.get_info.return_value = {
-        "model_version": "1.0.0",
-        "model_type": "XGBoost",
-        "is_loaded": True,
-        "features_count": 21,
-        "fraud_threshold": 0.5,
+        "model_version":   "1.0.0",
+        "model_type":      "GBM_oversampled",
+        "is_loaded":       True,
+        "features_count":  13,
+        "fraud_threshold": 0.851,
     }
     with patch("app.main.model", mock):
         yield mock
 
 
 # =============================================================================
-# Health & Info Endpoints
+# Health & Info
 # =============================================================================
 
 class TestHealthEndpoint:
 
-    def test_health_returns_200(self):
-        response = client.get("/health")
-        assert response.status_code == 200
+    def test_returns_200(self):
+        assert client.get("/health").status_code == 200
 
-    def test_health_response_format(self):
-        response = client.get("/health")
-        data = response.json()
+    def test_response_format(self):
+        data = client.get("/health").json()
         assert "status" in data
         assert "model_loaded" in data
         assert "model_version" in data
 
-    def test_health_model_loaded(self):
-        response = client.get("/health")
-        data = response.json()
+    def test_healthy_when_model_loaded(self):
+        data = client.get("/health").json()
         assert data["status"] == "healthy"
         assert data["model_loaded"] is True
 
-    def test_health_when_model_not_loaded(self):
+    def test_unhealthy_when_model_not_loaded(self):
         with patch("app.main.model", None):
-            response = client.get("/health")
-            data = response.json()
-            assert data["status"] == "unhealthy"
-            assert data["model_loaded"] is False
+            data = client.get("/health").json()
+        assert data["status"] == "unhealthy"
+        assert data["model_loaded"] is False
 
 
 class TestRootEndpoint:
 
-    def test_root_returns_200(self):
-        response = client.get("/")
-        assert response.status_code == 200
+    def test_returns_200(self):
+        assert client.get("/").status_code == 200
 
-    def test_root_contains_required_fields(self):
-        response = client.get("/")
-        data = response.json()
+    def test_contains_required_fields(self):
+        data = client.get("/").json()
         assert "name" in data
         assert "version" in data
         assert "docs" in data
@@ -124,18 +103,16 @@ class TestRootEndpoint:
 
 class TestMetricsEndpoint:
 
-    def test_metrics_returns_200(self):
-        response = client.get("/metrics")
-        assert response.status_code == 200
+    def test_returns_200(self):
+        assert client.get("/metrics").status_code == 200
 
-    def test_metrics_returns_prometheus_format(self):
+    def test_prometheus_format(self):
         response = client.get("/metrics")
         assert "text/plain" in response.headers.get("content-type", "")
 
-    def test_metrics_contains_http_requests(self):
+    def test_contains_http_requests(self):
         client.get("/health")
-        response = client.get("/metrics")
-        assert "http_requests_total" in response.text
+        assert "http_requests_total" in client.get("/metrics").text
 
 
 # =============================================================================
@@ -144,84 +121,75 @@ class TestMetricsEndpoint:
 
 class TestPredictEndpoint:
 
-    def test_predict_valid_transaction_returns_200(self):
-        response = client.post("/predict", json=VALID_TRANSACTION)
-        assert response.status_code == 200
+    def test_normal_transaction_returns_200(self):
+        assert client.post("/predict", json=NORMAL_TRANSACTION).status_code == 200
 
-    def test_predict_response_format(self):
-        response = client.post("/predict", json=VALID_TRANSACTION)
-        data = response.json()
+    def test_response_format(self):
+        data = client.post("/predict", json=NORMAL_TRANSACTION).json()
         assert "is_fraud" in data
         assert "fraud_probability" in data
         assert "risk_level" in data
         assert "model_version" in data
         assert "latency_ms" in data
 
-    def test_predict_probability_in_range(self):
-        response = client.post("/predict", json=VALID_TRANSACTION)
-        data = response.json()
+    def test_probability_in_range(self):
+        data = client.post("/predict", json=NORMAL_TRANSACTION).json()
         assert 0.0 <= data["fraud_probability"] <= 1.0
 
-    def test_predict_risk_level_valid(self):
-        response = client.post("/predict", json=VALID_TRANSACTION)
-        data = response.json()
+    def test_risk_level_valid(self):
+        data = client.post("/predict", json=NORMAL_TRANSACTION).json()
         assert data["risk_level"] in ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 
-    def test_predict_is_fraud_boolean(self):
-        response = client.post("/predict", json=VALID_TRANSACTION)
-        data = response.json()
+    def test_is_fraud_boolean(self):
+        data = client.post("/predict", json=NORMAL_TRANSACTION).json()
         assert isinstance(data["is_fraud"], bool)
 
-    def test_predict_fraud_transaction(self, mock_model):
-        mock_model.predict.return_value = (True, 0.92, "CRITICAL", 9.1)
-        response = client.post("/predict", json=HIGH_RISK_TRANSACTION)
-        data = response.json()
+    def test_fraud_transaction_detected(self, mock_model):
+        mock_model.predict.return_value = (True, 0.93, "CRITICAL", 9.1)
+        data = client.post("/predict", json=FRAUD_TRANSACTION).json()
         assert data["is_fraud"] is True
         assert data["risk_level"] == "CRITICAL"
         assert data["fraud_probability"] > 0.5
 
-    def test_predict_missing_required_field_returns_422(self):
-        incomplete = {k: v for k, v in VALID_TRANSACTION.items() if k != "transaction_amount"}
-        response = client.post("/predict", json=incomplete)
-        assert response.status_code == 422
+    def test_missing_amt_returns_422(self):
+        bad = {k: v for k, v in NORMAL_TRANSACTION.items() if k != "amt"}
+        assert client.post("/predict", json=bad).status_code == 422
 
-    def test_predict_negative_amount_returns_422(self):
-        bad = {**VALID_TRANSACTION, "transaction_amount": -1.0}
-        response = client.post("/predict", json=bad)
-        assert response.status_code == 422
+    def test_missing_category_returns_422(self):
+        bad = {k: v for k, v in NORMAL_TRANSACTION.items() if k != "category"}
+        assert client.post("/predict", json=bad).status_code == 422
 
-    def test_predict_empty_body_returns_422(self):
-        response = client.post("/predict", json={})
-        assert response.status_code == 422
+    def test_negative_amt_returns_422(self):
+        bad = {**NORMAL_TRANSACTION, "amt": -10.0}
+        assert client.post("/predict", json=bad).status_code == 422
 
-    def test_predict_model_not_loaded_returns_503(self):
+    def test_empty_body_returns_422(self):
+        assert client.post("/predict", json={}).status_code == 422
+
+    def test_model_not_loaded_returns_503(self):
         with patch("app.main.model", None):
-            response = client.post("/predict", json=VALID_TRANSACTION)
-            assert response.status_code == 503
+            assert client.post("/predict", json=NORMAL_TRANSACTION).status_code == 503
 
 
 # =============================================================================
-# Model Info Endpoint
+# Model Info
 # =============================================================================
 
 class TestModelInfoEndpoint:
 
-    def test_model_info_returns_200(self):
-        response = client.get("/model/info")
-        assert response.status_code == 200
+    def test_returns_200(self):
+        assert client.get("/model/info").status_code == 200
 
-    def test_model_info_format(self):
-        response = client.get("/model/info")
-        data = response.json()
+    def test_response_format(self):
+        data = client.get("/model/info").json()
         assert "model_version" in data
         assert "model_type" in data
         assert "is_loaded" in data
         assert "features_count" in data
         assert "fraud_threshold" in data
 
-    def test_model_info_threshold_in_range(self):
-        response = client.get("/model/info")
-        data = response.json()
+    def test_threshold_in_valid_range(self):
+        data = client.get("/model/info").json()
         assert 0.0 < data["fraud_threshold"] < 1.0
 
 
@@ -231,30 +199,37 @@ class TestModelInfoEndpoint:
 
 class TestEdgeCases:
 
-    def test_predict_zero_balance(self):
-        tx = {**VALID_TRANSACTION, "account_balance": 0.0}
-        response = client.post("/predict", json=tx)
-        assert response.status_code == 200
+    def test_very_large_amount(self):
+        tx = {**NORMAL_TRANSACTION, "amt": 9999.99}
+        assert client.post("/predict", json=tx).status_code == 200
 
-    def test_predict_very_high_amount(self):
-        tx = {**VALID_TRANSACTION, "transaction_amount": 999.0}
-        response = client.post("/predict", json=tx)
-        assert response.status_code == 200
+    def test_midnight_transaction(self):
+        tx = {**NORMAL_TRANSACTION, "trans_date_trans_time": "2019-01-01 00:00:00"}
+        assert client.post("/predict", json=tx).status_code == 200
 
-    def test_predict_zero_distance(self):
-        tx = {**VALID_TRANSACTION, "distance_from_home": 0.0}
-        response = client.post("/predict", json=tx)
-        assert response.status_code == 200
+    def test_3am_transaction(self):
+        tx = {**NORMAL_TRANSACTION, "trans_date_trans_time": "2019-01-01 03:00:00"}
+        assert client.post("/predict", json=tx).status_code == 200
 
-    def test_predict_same_location(self):
-        tx = {
-            **VALID_TRANSACTION,
-            "transaction_location": "Singapore",
-            "customer_home_location": "Singapore",
-            "is_international_transaction": False,
-        }
-        response = client.post("/predict", json=tx)
-        assert response.status_code == 200
+    def test_zero_city_pop(self):
+        tx = {**NORMAL_TRANSACTION, "city_pop": 0}
+        assert client.post("/predict", json=tx).status_code == 200
+
+    def test_all_categories(self):
+        categories = [
+            "misc_net", "grocery_pos", "entertainment", "gas_transport",
+            "misc_pos", "grocery_net", "shopping_net", "shopping_pos",
+            "food_dining", "personal_care", "health_fitness", "travel",
+            "kids_pets", "home"
+        ]
+        for cat in categories:
+            tx = {**NORMAL_TRANSACTION, "category": cat}
+            assert client.post("/predict", json=tx).status_code == 200
+
+    def test_both_genders(self):
+        for gender in ["M", "F"]:
+            tx = {**NORMAL_TRANSACTION, "gender": gender}
+            assert client.post("/predict", json=tx).status_code == 200
 
 
 if __name__ == "__main__":

@@ -94,10 +94,6 @@ Dataset info:
 # Train model (compare 3 models → save best by PR-AUC)
 python scripts/train_model.py
 
-# View MLflow results
-mlflow ui --backend-store-uri mlruns --port 5000
-# Open http://localhost:5000
-
 # Evaluate
 python scripts/evaluate_model.py
 # → Saves reports/confusion_matrix.png, roc_curve.png, etc.
@@ -147,7 +143,6 @@ docker-compose up --build -d
 |------------|----------------------------|-------------|
 | API        | http://localhost:8000      | —           |
 | API Docs   | http://localhost:8000/docs | —           |
-| MLflow     | http://localhost:5000      | —           |
 | Prometheus | http://localhost:9090      | —           |
 | Grafana    | http://localhost:3000      | admin/admin |
 
@@ -225,9 +220,38 @@ print(response.json())
 ## Running Tests
 
 ```bash
+# Run all tests
 pytest tests/ -v
+
+# With coverage report
 pytest tests/ -v --cov=app --cov-report=html
+
+# By file
+pytest tests/test_api.py -v      # API integration tests (mock model)
+pytest tests/test_model.py -v    # Feature engineering + risk level unit tests
+pytest tests/test_data.py -v     # Data quality tests (requires dataset in data/raw/)
 ```
+
+### Test Coverage
+
+| File | What it tests |
+|------|--------------|
+| `test_api.py` | All endpoints (health, predict, model/info, metrics), validation errors (422), 503 when model not loaded, all 14 categories, both genders |
+| `test_model.py` | `engineer_features()` — hour, is_night, is_weekend, age, distance, gender_enc, amt_vs_category_mean; haversine distance; risk level (LOW/MEDIUM/HIGH/CRITICAL) |
+| `test_data.py` | Schema, target binary, fraud rate range, no excessive nulls, date/dob parseable, engineered feature validity |
+
+> `test_api.py` uses mock model — no `.pkl` file needed. `test_data.py` requires `data/raw/fraudTrain.csv` and `fraudTest.csv`.
+
+### Sample Test Cases
+
+| Case | Transaction | Expected |
+|------|------------|----------|
+| Normal | $4.97 misc_net, 2pm NC | `is_fraud=false`, LOW |
+| Fraud | $281.06 grocery, 1am NC | `is_fraud=true`, HIGH/CRITICAL |
+| Edge | $9999.99 any category | 200 OK |
+| Edge | 3am transaction | 200 OK |
+| Invalid | Missing `amt` field | 422 |
+| Invalid | Negative `amt` | 422 |
 
 ## Load Testing
 
@@ -277,7 +301,6 @@ Generates in `reports/`:
 |---------|----------|
 | `Model not loaded` (503) | Run `python scripts/train_model.py` first |
 | Dataset not found | Download from Kaggle link above, place in `data/raw/` |
-| MLflow 403 error | Use local: `mlflow ui --backend-store-uri mlruns --port 5000` |
 | Grafana no data | Check `localhost:9090/targets` — API must be UP |
 | Docker build fails | Use `python:3.10` (not `slim`) in Dockerfile |
 | numpy compatibility | Ensure `numpy<2` in requirements.txt |

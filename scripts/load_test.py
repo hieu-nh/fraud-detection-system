@@ -16,49 +16,41 @@ import requests
 
 API_URL = "http://localhost:8000"
 
-# Sample transactions
+CATEGORIES = [
+    "misc_net", "grocery_pos", "entertainment", "gas_transport",
+    "misc_pos", "grocery_net", "shopping_net", "shopping_pos",
+    "food_dining", "personal_care", "health_fitness", "travel",
+    "kids_pets", "home"
+]
+
+STATES = ["NC", "TX", "CA", "NY", "FL", "WA", "ID", "MT", "SC", "UT"]
+
 NORMAL_TRANSACTION = {
-    "transaction_amount": 2.0,
-    "transaction_time": "14:30",
-    "transaction_date": "2025-03-08",
-    "transaction_type": "POS",
-    "merchant_category": "Retail",
-    "transaction_location": "Singapore",
-    "customer_home_location": "Singapore",
-    "distance_from_home": 5.0,
-    "card_type": "Credit",
-    "account_balance": 50.0,
-    "daily_transaction_count": 2,
-    "weekly_transaction_count": 8,
-    "avg_transaction_amount": 2.5,
-    "max_transaction_last_24h": 3.0,
-    "is_international_transaction": False,
-    "is_new_merchant": False,
-    "failed_transaction_count": 0,
-    "unusual_time_transaction": False,
-    "previous_fraud_count": 0,
+    "trans_date_trans_time": "2019-01-01 14:30:00",
+    "amt": 4.97,
+    "category": "misc_net",
+    "gender": "F",
+    "city_pop": 3495,
+    "dob": "9/3/88",
+    "lat": 36.0788,
+    "long": -81.1781,
+    "merch_lat": 36.011,
+    "merch_long": -82.048,
+    "state": "NC",
 }
 
 SUSPICIOUS_TRANSACTION = {
-    "transaction_amount": 45.0,
-    "transaction_time": "03:15",
-    "transaction_date": "2025-03-08",
-    "transaction_type": "Online",
-    "merchant_category": "Electronics",
-    "transaction_location": "Tokyo",
-    "customer_home_location": "Lagos",
-    "distance_from_home": 13000.0,
-    "card_type": "Credit",
-    "account_balance": 1.5,
-    "daily_transaction_count": 20,
-    "weekly_transaction_count": 60,
-    "avg_transaction_amount": 1.0,
-    "max_transaction_last_24h": 45.0,
-    "is_international_transaction": True,
-    "is_new_merchant": True,
-    "failed_transaction_count": 4,
-    "unusual_time_transaction": True,
-    "previous_fraud_count": 1,
+    "trans_date_trans_time": "2019-01-02 01:06:00",
+    "amt": 281.06,
+    "category": "grocery_pos",
+    "gender": "M",
+    "city_pop": 885,
+    "dob": "15/9/88",
+    "lat": 35.9946,
+    "long": -81.7266,
+    "merch_lat": 36.430,
+    "merch_long": -81.179,
+    "state": "NC",
 }
 
 
@@ -67,8 +59,14 @@ def random_transaction() -> dict:
     is_suspicious = random.random() < 0.1  # 10% suspicious
     base = SUSPICIOUS_TRANSACTION if is_suspicious else NORMAL_TRANSACTION
     tx = base.copy()
-    tx["transaction_amount"] = round(random.uniform(0.5, 50.0), 1)
-    tx["account_balance"] = round(random.uniform(1.0, 100.0), 1)
+    tx["amt"]      = round(random.uniform(1.0, 500.0), 2)
+    tx["category"] = random.choice(CATEGORIES)
+    tx["gender"]   = random.choice(["M", "F"])
+    tx["state"]    = random.choice(STATES)
+    tx["city_pop"] = random.randint(100, 2000000)
+    # Random hour for variety
+    hour = random.randint(0, 23)
+    tx["trans_date_trans_time"] = f"2019-01-{random.randint(1,28):02d} {hour:02d}:{random.randint(0,59):02d}:00"
     return tx
 
 
