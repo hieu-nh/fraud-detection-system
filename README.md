@@ -57,12 +57,12 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 
 | Nhóm | Features | Ý nghĩa cho fraud detection |
 | --- | --- | --- |
-| **Giao dịch** | `amt`, `trans_date_trans_time`, `unix_time`, `trans_num` | Giá trị giao dịch bất thường, thời điểm giao dịch khả nghi |
-| **Merchant** | `merchant`, `category` | Loại merchant rủi ro cao (vd: online shopping, grocery) |
-| **Địa lý — Khách hàng** | `lat`, `long`, `city`, `state`, `zip`, `city_pop` | Vị trí khách hàng |
-| **Địa lý — Merchant** | `merch_lat`, `merch_long` | Khoảng cách giữa khách hàng và merchant (feature engineering) |
-| **Nhân khẩu học** | `gender`, `dob`, `job` | Phân tích fairness; tuổi có thể liên quan đến rủi ro |
-| **Định danh** | `cc_num`, `first`, `last`, `street` | Cần loại bỏ hoặc mã hóa — không dùng làm feature do privacy |
+| **Giao dịch** | `amt`, `trans_date_trans_time` | Giá trị giao dịch bất thường, thời điểm giao dịch khả nghi |
+| **Merchant** | `category` | Loại merchant rủi ro cao (vd: online shopping, grocery) — được LabelEncode để dùng trong model |
+| **Địa lý — Khách hàng** | `lat`, `long`, `state`, `city_pop` | Vị trí khách hàng; `state` được LabelEncode; `city_pop` dùng trực tiếp |
+| **Địa lý — Merchant** | `merch_lat`, `merch_long` | Dùng để tính haversine `distance` (khoảng cách km customer→merchant) |
+| **Nhân khẩu học** | `gender`, `dob` | `gender` encode M=1/F=0; `dob` để tính `age` tại thời điểm giao dịch |
+| **Không dùng làm feature** | `cc_num`, `first`, `last`, `street`, `merchant`, `city`, `zip`, `job`, `unix_time`, `trans_num` | Loại bỏ khỏi model — PII hoặc không có giá trị dự đoán |
 
 ### 2.3. Đặc điểm quan trọng của dataset
 
@@ -92,7 +92,7 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 - *Mô tả:* Khi một giao dịch mới được thực hiện, hệ thống gửi thông tin giao dịch tới FraudShield API. Hệ thống trả về nhãn dự đoán (Normal/Fraud) cùng điểm xác suất gian lận (fraud probability score).
 - *Flow:* Giao dịch mới → Gửi tới FraudShield API → Nhận prediction (is_fraud: 0/1) + fraud_probability (0–1)
 - *Input:* amt, category, merchant, lat/long, trans_date_trans_time, gender, dob, v.v.
-- *Output:* `{"is_fraud": 0, "fraud_probability": 0.03, "explanation": {...}}`
+- *Output:* `{"is_fraud": true, "fraud_probability": 0.92, "risk_level": "CRITICAL", "model_version": "1.0.0", "latency_ms": 8.3}`
 
 **UC-02:**  **Giám sát hiệu suất model**   
 
@@ -126,6 +126,31 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 | FR-09 | Health check endpoint | **Must-have** | Production readiness |
 | FR-10 | API documentation (Swagger/OpenAPI) | **Must-have** | Yêu cầu đồ án |
 | FR-11 | CI/CD pipeline qua GitHub Actions | **Must-have** | Yêu cầu đồ án |
+| FR-12 | Fairness analysis qua nhiều nhóm (gender, category, state) | **Should-have** | Responsible AI |
+| FR-13 | Load testing để xác nhận throughput target | **Should-have** | Performance validation |
+
+### 3.4. Non-Functional Requirements (NFR)
+
+| ID | Requirement | Category | Priority | Target |
+| --- | --- | --- | --- | --- |
+| NFR-01 | API response time P95 < 500ms | **Performance** | **Must-have** | Đo qua Prometheus histogram |
+| NFR-02 | API response time P99 < 1000ms | **Performance** | **Should-have** | Đo qua Prometheus histogram |
+| NFR-03 | Model inference latency < 100ms | **Performance** | **Must-have** | Đo riêng trong `model.predict()` |
+| NFR-04 | Throughput ≥ 50 requests/min trên local Docker | **Scalability** | **Should-have** | Xác nhận bằng `load_test.py` |
+| NFR-05 | Container có sẵn cấu hình health check khởi động lại khi fail | **Reliability** | **Must-have** | Docker Compose `healthcheck` config (`retries: 3`) |
+| NFR-06 | Health check phản hồi trong 10s | **Reliability** | **Must-have** | `/health` endpoint; `start_period: 10s` trong Compose |
+| NFR-07 | PII không được log hoặc expose qua API response | **Security** | **Must-have** | Input sanitization; không log cc_num, name; không có PII trong `FraudPredictionResponse` |
+| NFR-08 | Sensitive config qua environment variables, không hardcode | **Security** | **Must-have** | `os.getenv()` trong `config.py`; Docker Compose `environment` block |
+| NFR-09 | Code coverage ≥ 70% trên `app/` module | **Maintainability** | **Should-have** | Đo qua `pytest --cov` + Codecov |
+| NFR-10 | CI pipeline hoàn thành trong < 10 phút | **Maintainability** | **Should-have** | GitHub Actions workflow timing |
+| NFR-11 | Tất cả dependencies được pin version trong `requirements.txt` | **Reproducibility** | **Must-have** | Tránh breaking changes từ upstream |
+| NFR-12 | Model + pipeline artifacts có thể reproduce từ cùng dataset | **Reproducibility** | **Must-have** | `random_state=42` trong toàn bộ pipeline |
+
+> **Phân loại priority theo MoSCoW:**
+> - **Must-have**: Bắt buộc — project không hoàn chỉnh nếu thiếu
+> - **Should-have**: Quan trọng — nên có nếu không bị giới hạn thời gian
+> - **Could-have**: Tốt nếu có — nice-to-have
+> - **Won't-have**: Không làm trong phạm vi dự án này
 
 ---
 
@@ -166,16 +191,18 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 
 ### 5.1. Trong phạm vi (In Scope)
 
-- ML pipeline hoàn chỉnh: data ingestion → EDA → preprocessing → feature engineering → model training → evaluation
-- Feature engineering từ raw data (khoảng cách customer-merchant, giờ trong ngày, ngày trong tuần, tuổi khách hàng, v.v.)
-- Xử lý class imbalance (SMOTE, class weights, hoặc threshold tuning)
-- REST API serving prediction (FastAPI)
-- Docker + Docker Compose deployment
-- Prometheus + Grafana monitoring
-- MLflow experiment tracking
-- GitHub Actions CI/CD
-- Responsible AI: fairness analysis theo gender, explainability qua SHAP
-- Testing: unit, integration, data quality, model validation
+- **ML pipeline hoàn chỉnh**: data ingestion → preprocessing → feature engineering → model training → threshold tuning → evaluation
+- **Feature engineering** từ raw data: haversine distance (customer→merchant), datetime features (hour, day_of_week, is_night, is_weekend), age from dob, amt_vs_category_mean ratio, label encoding cho category/state
+- **Xử lý class imbalance**: manual oversampling (fraud class × 10), class_weight='balanced', threshold optimization tối đa F1
+- **Model comparison**: benchmark 3 algorithms (LogisticRegression, RandomForest, GradientBoosting) trước khi chọn best
+- **Hyperparameter tuning**: RandomizedSearchCV với StratifiedKFold(5)
+- **REST API serving prediction** (FastAPI) với Pydantic validation
+- **Docker + Docker Compose** deployment cho api, prometheus, grafana
+- **Prometheus + Grafana** monitoring với custom business metrics và alert rules
+- **MLflow experiment tracking**: log params, metrics, model artifacts cho mỗi training run
+- **GitHub Actions CI/CD**: lint (flake8, black, isort) → unit tests → Docker build
+- **Responsible AI**: SHAP explainability (bar plot + beeswarm), fairness analysis theo gender, category, state
+- **Testing**: unit tests (model logic, feature engineering), integration tests (API endpoints), data quality tests
 
 ### 5.2. Ngoài phạm vi (Out of Scope)
 
@@ -195,22 +222,37 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 | **Thời gian** | 1 tuần phát triển |
 | **Hạ tầng** | Local Docker environment, không có GPU |
 | **Đội ngũ** | 4 thành viên |
+| **Model complexity** | Chỉ dùng sklearn/GBM truyền thống (không dùng deep learning/XGBoost library) do giới hạn thời gian và không có GPU |
 
-### 5.4. Assumptions
+### 5.4. Team Roles & Responsibilities
+
+| Thành viên | Vai trò chính | Phụ trách |
+| --- | --- | --- |
+| Member 1 | **ML Engineer** | Thiết kế và implement ML pipeline (`train_model.py`, `evaluate_model.py`), feature engineering, model comparison |
+| Member 2 | **Backend / API Engineer** | FastAPI application (`app/`), Pydantic schemas, model serving, Prometheus metrics integration |
+| Member 3 | **DevOps Engineer** | Docker, Docker Compose, GitHub Actions CI/CD workflow, deployment configuration |
+| Member 4 | **Data Analyst / Responsible AI** | Responsible AI analysis (`responsible_ai.py`), SHAP explainability, fairness analysis, documentation |
+
+> *Mỗi thành viên đều tham gia vào testing và review toàn bộ codebase.*
+
+### 5.5. Assumptions
 
 - Nhãn `is_fraud` trong dataset là chính xác (ground truth)
 - Phân phối giao dịch trong dataset (mặc dù simulated) đủ realistic để train model có ý nghĩa
-- Fraud patterns trong training set cũng xuất hiện trong test set (không có concept drift giữa train/test)
+- Fraud patterns trong training set cũng xuất hiện trong test set (không có concept drift đáng kể giữa train/test)
+- Hệ thống được thiết kế cho **batch serving** (request-by-request) — không phải real-time streaming
+- Model được retrain thủ công khi phát hiện performance degradation, không có automated retraining pipeline
 
-### 5.5. Risks & Mitigations
+### 5.6. Risks & Mitigations
 
 | Risk | Impact | Likelihood | Mitigation |
 | --- | --- | --- | --- |
-| **Class imbalance** dẫn đến model predict toàn Normal | Cao | Cao | SMOTE, undersampling, class_weight='balanced', threshold tuning; đánh giá bằng PR-AUC thay vì accuracy |
-| **Overfitting** trên training data | Trung bình | Trung bình | Cross-validation, regularization, đánh giá trên test set riêng |
-| **Data leakage** từ features có tương quan trực tiếp với target | Cao | Thấp | Review feature engineering cẩn thận; không dùng features tạo sau giao dịch |
-| **PII exposure** trong logs/API | Cao | Thấp | Input sanitization, không log sensitive fields, loại bỏ PII khỏi model |
-| **Model bias** theo gender hoặc vùng miền | Trung bình | Trung bình | Fairness analysis, equalized odds check, SHAP analysis per group |
+| **Class imbalance** dẫn đến model predict toàn Normal | Cao | Cao | Manual oversampling (fraud × 10), class_weight='balanced', threshold optimization trên F1; đánh giá bằng PR-AUC thay vì accuracy |
+| **Overfitting** trên training data | Trung bình | Trung bình | StratifiedKFold(5) cross-validation trong hyperparameter tuning, regularization, đánh giá trên test set riêng |
+| **Data leakage** từ features có tương quan trực tiếp với target | Cao | Thấp | Review feature engineering cẩn thận; chỉ dùng features có sẵn tại thời điểm giao dịch; không dùng cc_num, trans_num |
+| **PII exposure** trong logs/API | Cao | Thấp | Input sanitization, không log sensitive fields (cc_num, first, last), loại bỏ PII khỏi model features |
+| **Model bias** theo gender hoặc vùng miền | Trung bình | Trung bình | SHAP analysis per group, fairness analysis (recall disparity < 10%), Responsible AI report |
+| **Model drift** khi fraud patterns thay đổi | Cao | Trung bình | Monitor fraud rate qua Prometheus; alert khi fraud_detection_rate > 15%; retrain thủ công khi phát hiện degradation |
 
 ---
 

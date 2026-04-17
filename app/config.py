@@ -14,7 +14,7 @@ MODEL_VERSION = os.getenv("MODEL_VERSION", "1.0.0")
 
 # API settings
 API_TITLE = "FraudShield Detection API"
-API_DESCRIPTION = "Real-time financial transaction fraud detection using XGBoost"
+API_DESCRIPTION = "Real-time financial transaction fraud detection using Gradient Boosting (GBM)"
 API_VERSION = "1.0.0"
 
 # Server settings
