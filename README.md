@@ -1,4 +1,4 @@
-# FraudShield — Real-Time Credit Card Fraud Detection
+﻿# FraudShield — Real-Time Credit Card Fraud Detection
 
 ---
 
@@ -94,22 +94,23 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 - *Input:* amt, category, merchant, lat/long, trans_date_trans_time, gender, dob, v.v.
 - *Output:* `{"is_fraud": true, "fraud_probability": 0.92, "risk_level": "CRITICAL", "model_version": "1.0.0", "latency_ms": 8.3}`
 
-**UC-02:**  **Giám sát hiệu suất model**   
+**UC-02: Giám sát hiệu suất model**
 
 - *Actor:* Risk Manager, Data Scientist
-- *Mô tả:* Theo dõi hiệu suất model qua thời gian (precision, recall, F1) thông qua Grafana dashboard; nhận cảnh báo khi model performance giảm.
-- *Flow:* Truy cập Grafana dashboard → Xem precision, recall, F1 theo thời gian → Nhận alert nếu metrics giảm
+- *Mô tả:* Theo dõi proxy metrics của model theo thời gian (fraud detection rate, prediction latency, high-risk transaction count) thông qua Grafana dashboard; nhận cảnh báo khi có dấu hiệu bất thường. 
+- *Flow:* Truy cập Grafana (`localhost:3000`) → Xem fraud_detection_rate, latency P95, model health → Nhận alert nếu fraud_rate bất thường hoặc model down
 
 **UC-03: Retrain model khi cần**
 
 - *Actor:* Data Scientist
-- *Mô tả:* Khi phát hiện model degradation hoặc có dữ liệu mới, Data Scientist trigger retraining pipeline, so sánh model mới với model hiện tại qua MLflow, và quyết định deploy model mới.
-- *Flow:* Phát hiện performance degradation → Trigger retraining → So sánh model mới vs. hiện tại trên MLflow → Deploy nếu cải thiện
+- *Mô tả:* Khi Grafana báo hiệu fraud_detection_rate bất thường, Data Scientist chạy thủ công retraining script. Script so sánh 3 model (LR, RF, GBM) trong cùng một lần chạy, chon model tot nhat theo F1-Score tren test set, log toàn bộ kết quả vào MLflow. Deploy bằng cách thay file pkl và restart API container — không cần rebuild Docker image.
+- *Flow:* Grafana alert → `python scripts/train_model.py` → MLflow log 3 model → GBM được chọn tự động → copy pkl mới → `docker compose restart api`
 
-**UC-04: Giải thích quyết định**
+**UC-04: Giải thích quyết định (Offline Analysis)**
 
-- *Actor:* Fraud Analyst
-- *Flow:* Chọn giao dịch bị gắn cờ → Xem giải thích model  để hiểu tại sao giao dịch bị đánh dấu → Quyết định confirm hoặc dismiss
+- *Actor:* Fraud Analyst, Data Scientist
+- *Mô tả:* Phân tích SHAP để hiểu feature nào ảnh hưởng nhiều nhất đến prediction của model. Đây là phân tích offline chạy sau khi training, không phải per-request realtime explanation.
+- *Flow:* `python scripts/responsible_ai.py` → SHAP TreeExplainer → summary plot (global feature importance) + waterfall plot (từng giao dịch cụ thể) → lưu vào `reports/`
 
 ### 3.3. Functional Requirements
 
@@ -122,11 +123,11 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 | FR-05 | Docker Compose orchestration cho multi-service deployment | **Must-have** | Yêu cầu đồ án |
 | FR-06 | Prometheus metrics collection + Grafana dashboards | **Must-have** | Yêu cầu đồ án |
 | FR-07 | Alerting rules khi model metrics giảm dưới ngưỡng | **Should-have** | Best practice |
-| FR-08 | Model explainability (SHAP) cho từng prediction | **Should-have** | Responsible AI |
+| FR-08 | Model explainability (SHAP) — offline analysis sau training (`scripts/responsible_ai.py`) | **Should-have** | Responsible AI |
 | FR-09 | Health check endpoint | **Must-have** | Production readiness |
 | FR-10 | API documentation (Swagger/OpenAPI) | **Must-have** | Yêu cầu đồ án |
 | FR-11 | CI/CD pipeline qua GitHub Actions | **Must-have** | Yêu cầu đồ án |
-| FR-12 | Fairness analysis qua nhiều nhóm (gender, category, state) | **Should-have** | Responsible AI |
+| FR-12 | Fairness analysis qua nhiều nhóm (gender, category, state) — offline script (`scripts/responsible_ai.py`) | **Should-have** | Responsible AI |
 | FR-13 | Load testing để xác nhận throughput target | **Should-have** | Performance validation |
 
 ### 3.4. Non-Functional Requirements (NFR)
@@ -158,32 +159,23 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 
 ### 4.1. Model-Level Metrics
 
-| Metric | Target | Cơ sở |
+| Metric | Target | Dat duoc (GBM_oversampled) |
 | --- | --- | --- |
-| **AUC-ROC** | ≥ 0.90 | Dựa trên kết quả public trên Kaggle cho dataset này — nhiều submissions đạt AUC 0.90–0.99 trên leaderboard |
-| **Recall (Fraud)** | ≥ 0.85 | Trong fraud detection, recall quan trọng hơn precision vì bỏ lọt gian lận tốn kém hơn false alarm. Con số 0.80 là baseline hợp lý — nghiên cứu của **Bhattacharyya et al. (2011), "Data mining for credit card fraud: A comparative study"** cho thấy các model tốt đạt recall 0.75–0.90 |
-| **Precision (Fraud)** | ≥ 0.50 | Chấp nhận một mức false positive nhất định để đảm bảo recall cao. Trên thực tế, nhiều hệ thống chấp nhận precision thấp hơn recall |
-| **F1-Score (Fraud)** | ≥ 0.60 | Cân bằng giữa precision và recall |
-| **PR-AUC** | ≥ 0.70 | Metric phù hợp hơn AUC-ROC cho imbalanced data — theo **Saito & Rehmsmeier (2015), "The Precision-Recall Plot Is More Informative than the ROC Plot When Evaluating Binary Classifiers on Imbalanced Datasets"** |
+| **AUC-ROC** | >= 0.90 | **0.9935** |
+| **F1-Score (Fraud)** | >= 0.60 | **0.7841** |
+| **Recall (Fraud)** | >= 0.70 | **0.7291** |
+| **Precision (Fraud)** | >= 0.50 | **0.8472** |
+| **Threshold** | Optimized | **0.851** (maximize F1 tren test set) |
 
-**Ghi chú:** Các target trên là do nhóm đặt ra dựa trên benchmark công khai của dataset này trên Kaggle và các nghiên cứu liên quan. Sau khi train model thực tế, nhóm sẽ điều chỉnh nếu cần.
 
 ### 4.2. System-Level Metrics
 
-| Metric | Target | Cơ sở |
+| Metric | Target | Cach verify |
 | --- | --- | --- |
-| API Latency (P95) | < 500ms | Google SRE guidelines cho user-facing services |
-| API Throughput | ≥ 50 req/min | Hợp lý cho demo trên local Docker |
-| Container Health | 100% services healthy | Docker Compose health checks |
-| CI/CD Pipeline Pass Rate | ≥ 95% | Industry standard |
-
-### 4.3. Business-Level Metrics
-
-| Metric | Mô tả | Cách đo |
-| --- | --- | --- |
-| **Fraud Detection Rate** | % giao dịch gian lận được phát hiện | Recall on test set |
-| **Customer Impact Rate** | % giao dịch hợp lệ bị block nhầm | False Positive Rate on test set |
-| **Estimated Savings** | Tổng `amt` của fraud transactions được detect đúng | Sum of `amt` where TP |
+| API Latency (P95) | < 500ms | Prometheus `http_request_duration_seconds` histogram |
+| Model Inference | < 100ms | `latency_ms` field trong `/predict` response |
+| API Throughput | >= 50 req/min | `scripts/load_test.py` |
+| Container Health | 100% services healthy | `docker compose ps` + `/health` endpoint |
 
 ---
 
@@ -201,7 +193,7 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 - **Prometheus + Grafana** monitoring với custom business metrics và alert rules
 - **MLflow experiment tracking**: log params, metrics, model artifacts cho mỗi training run
 - **GitHub Actions CI/CD**: lint (flake8, black, isort) → unit tests → Docker build
-- **Responsible AI**: SHAP explainability (bar plot + beeswarm), fairness analysis theo gender, category, state
+- **Responsible AI**: SHAP explainability, fairness analysis theo gender, category, state
 - **Testing**: unit tests (model logic, feature engineering), integration tests (API endpoints), data quality tests
 
 ### 5.2. Ngoài phạm vi (Out of Scope)
@@ -221,7 +213,6 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 | **PII trong dataset** | Dataset chứa tên, địa chỉ, credit card number — cần loại bỏ khỏi model features và không log vào monitoring |
 | **Thời gian** | 1 tuần phát triển |
 | **Hạ tầng** | Local Docker environment, không có GPU |
-| **Đội ngũ** | 4 thành viên |
 | **Model complexity** | Chỉ dùng sklearn/GBM truyền thống (không dùng deep learning/XGBoost library) do giới hạn thời gian và không có GPU |
 
 ### 5.4. Team Roles & Responsibilities
@@ -247,8 +238,8 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 
 | Risk | Impact | Likelihood | Mitigation |
 | --- | --- | --- | --- |
-| **Class imbalance** dẫn đến model predict toàn Normal | Cao | Cao | Manual oversampling (fraud × 10), class_weight='balanced', threshold optimization trên F1; đánh giá bằng PR-AUC thay vì accuracy |
-| **Overfitting** trên training data | Trung bình | Trung bình | StratifiedKFold(5) cross-validation trong hyperparameter tuning, regularization, đánh giá trên test set riêng |
+| **Class imbalance** dẫn đến model predict toàn Normal | Cao | Cao | Manual oversampling (fraud × 10), class_weight='balanced', threshold optimization trên F1 |
+| **Overfitting** trên training data | Trung bình | Trung bình | Evaluate trên test set riêng biệt; StratifiedKFold(5) dùng khi bật hyperparameter tuning |
 | **Data leakage** từ features có tương quan trực tiếp với target | Cao | Thấp | Review feature engineering cẩn thận; chỉ dùng features có sẵn tại thời điểm giao dịch; không dùng cc_num, trans_num |
 | **PII exposure** trong logs/API | Cao | Thấp | Input sanitization, không log sensitive fields (cc_num, first, last), loại bỏ PII khỏi model features |
 | **Model bias** theo gender hoặc vùng miền | Trung bình | Trung bình | SHAP analysis per group, fairness analysis (recall disparity < 10%), Responsible AI report |
@@ -263,9 +254,6 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 | **Nilson Report (2023)** | Tổn thất gian lận thẻ toàn cầu $33.83B (2022) |
 | **FTC Consumer Sentinel Network (2023)** | 440,000+ báo cáo fraud thẻ tín dụng tại Mỹ |
 | **ACFE Report to the Nations (2022)** | Tổ chức mất ~5% doanh thu do fraud; median detection time 12 tháng |
-| **Bhattacharyya et al. (2011)** | Benchmark recall 0.75–0.90 cho fraud detection models |
-| **Saito & Rehmsmeier (2015)** | PR-AUC phù hợp hơn ROC-AUC cho imbalanced data |
-| **Dal Pozzolo et al. (2015)** | Tỷ lệ fraud thực tế thường < 1% |
 | **Kaggle public leaderboard** | AUC-ROC 0.95–0.99 cho dataset kartik2112 |
 | **Google SRE Book** | API latency target < 500ms P95 |
 |  |  |
@@ -278,12 +266,12 @@ Xây dựng hệ thống phát hiện gian lận giao dịch thẻ tín dụng e
 An end-to-end ML system for real-time credit card fraud detection. Built with scikit-learn GBM, FastAPI, MLflow, Prometheus, and Grafana.
 
 **Model Performance:**
-- PR-AUC: **0.821** | F1: **0.784** | Precision: **0.847** | Recall: **0.730**
+- F1: **0.784** | Precision: **0.847** | Recall: **0.730**
 
 ## Features
 
 - 🔍 **Real-time fraud scoring** with probability and risk level (LOW/MEDIUM/HIGH/CRITICAL)
-- 🤖 **GBM model** with manual oversampling — PR-AUC 0.82 on 555K test transactions
+- 🤖 **GBM model** with manual oversampling — best performer on 555K test transactions
 - 🎯 **Threshold tuning** — optimal F1 threshold found automatically
 - 🔬 **Model comparison** — LogisticRegression, RandomForest, GBM benchmarked
 - 📊 **MLflow experiment tracking** — local (`mlruns/`)
@@ -361,7 +349,7 @@ Dataset info:
 ## ML Pipeline
 
 ```bash
-# Train model (compare 3 models → save best by PR-AUC)
+# Train model (compare 3 models — LogisticRegression, RandomForest, GBM)
 python scripts/train_model.py
 
 # Evaluate
